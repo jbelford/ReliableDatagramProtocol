@@ -1,0 +1,107 @@
+Jack Belford
+V00829017
+CSC361 ~ Assignment #2a
+
+1. How do you design and implement your RDP header and header fields? Do you use any additional header fields?
+
+    For my RDP header I am using all the fields as suggested in the assignment description.
+    The header is placed in the first 24 bytes all sent messages. The fields are placed at certain byte offsets within this window.
+
+    Magic:
+    The magic field is placed first and indicates that the message is of our RDP protocol. 
+    Byte offset: 0
+    Bytes: 6
+
+    Type:
+    The type field indicates what type of packet it is. Ex: SYN, ACK, DAT, etc.
+    Byte offset: 6
+    Bytes: 3
+
+    Sequence/Acknowledgement:
+    The sequence number and Acknowledgement number share this field. The type indicates which one it is.
+    Byte offset: 9
+    Bytes: 4 (I am using a 32 bit sequence number alike to TCP)
+
+    Length/Window:
+    The data length and window size also share this field. The type indicates which one it is.
+    Length is the size of the data in the payload in bytes. Window is the window size.
+    Byte offset: 13
+    Bytes: 4
+
+    Although the header size is 24 bytes I am only really using 17 of them. The 7 blank bytes indicate the end of the header. 
+
+    Payload:
+    This is only used for DAT packets.
+    Byte offset: 24
+    Bytes: Length specified above
+
+    Right now I have no need for extra header fields but there is space to include some with my current header size if I wish.
+
+2. How do you design and implement the connection management using SYN, FIN and RST packets? How to choose the initial sequence number?
+
+    The sender first sends a SYN packet to the receiver. The receiver then responds with an ACK packet. In this initial two-way handshake the sender
+    transmits the initial sequence number to the receiver and the receiver transmits its window size back to the sender.
+    After this the sender begins the data transfer.
+    When the transfer completes the sender sends a FIN packet to the receiver. When the receiver receives this it writes anything left in its buffer to the file
+    and sends an ACK to the sender before closing. The sender closes after receiving this final acknowledgement.
+
+    The initial sequence number will be chosen randomly. In my current code this is not so but I plan to have support for a randomly chosen sequence number in
+    the final implementation. Currently it starts off at zero to help with debugging. 
+
+    If the sender sends a packet with out of bounds sequence number then the receiver will send a RST packet and end the transfer.
+    Upon receiving an RST packet the sender will break out of its transfer and exit as well.
+
+3. How do you design and implement the flow control using window size? How to choose the initial window size and adjust the size?
+   How to read and write the file and how to manage the buffer at the sender and receiver side, respectively?
+
+   Flow control works as follows:
+   Sender:
+       while(Receiver window size >= 1000 bytes) -> Send a packet (Make sure packet is FULL. Unless its the last packet)
+       set timeout for last packet sent
+       while(hasn't timed out && not all packets sent have been ACKed) -> listen for incoming packets 
+       set sender sequence # to highest acked, shift data in buffer, load more if needed
+       REPEAT
+
+   Receiver:
+       listen for packets
+       parse its header
+       if (DAT) -> write data into buffer
+       send response with current cumulative ACK and window size
+   
+   In my current implentation the receivers buffer size is defaulted to 10240 bytes. When this buffer can no longer fit at least 1000 bytes into it it will
+   write its data into received.dat file and the window size will be reset to 10240. When the receiver reads a DAT packet the window size is decreased by the
+   length of the payload. It essentially keeps track of how much space is available in the buffer. 
+
+   The senders window is by default set to the receivers window, rounded up to the nearest thousand bytes (ex. 11000). I did this because it is easier to ensure
+   data is loaded in full in the buffer since each payload can fit up to a maximum of 1000 bytes. The sender will always maintain this buffer with data read from
+   the file it is sending. In my code the method loadDataIntoBuffer() is called after sending a batch of packets and receiving their ACKs. This is where the buffer is
+   shifted and new data is loaded into the freed up space. 
+
+   The sender will only send as many DAT packets as the receiver can handle in its window. 
+
+
+4. How do you design and implement the error detection, notification and recovery? How to use timer? How many timers do you use? 
+   How to respond to the events at the sender and receiver side, respectively? How to ensure reliable data transfer?
+
+   For error detection there are multiple ways I will detect it:
+   1) Timeout: After sending a batch of DAT packets to the receiver. The sender will set a timeout.
+        The length for this timeout will depend on a variation of the calculations shown in the textbook. I will measure the RTT
+        for the first sent packet of each batch (also in the two-way handshake). And use this to choose the RTO. 
+
+   2) Cumulative Acknowledgement & Failed Expectations:
+        The receiver will always send ACKs with the next expected ACK number. If it receives data that is ahead of this ack number, It will 
+        still store it but not indicate that it does. It stores it because its possible the data before it is just behind. On the sender side,
+        after sending a batch of data packets it will calculate the expected ACK number if all goes well. After receiving packets if
+        the highest ACK number responded is less than the expected then we know exactly how many packets must be re-sent.
+
+    I will not be using selective acknowledgement nor triple-duplicate methods. The above will work just fine for the needs of this assignment.
+    Reliable data transfer will be ensured with these methods because the receiver only acknowledges a packet when it is received correctly. Thus,
+    the sender will have to keep re-sending packets until they are all correctly transferred. 
+
+    Currently this Error handling is already roughly implemented. I have not yet set it up to configure the timeout dynamically and just have a 
+    large timeout of 500ms.
+
+5. Any additional design and implementation considerations you want to get feedback from your lab instructor?
+
+    None.
+

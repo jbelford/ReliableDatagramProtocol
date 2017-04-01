@@ -1,0 +1,163 @@
+Assignment #2 - Final Version
+Jack Belford
+V00829017
+Lab B03
+
+This is the final implementation for the Reliable Datagram Protocol assignment.
+
+To compile:
+    $ make
+        OR
+    $ gcc rdpr.c -o rdpr -lm
+    $ gcc rdps.c -o rdps -lm
+
+To clean:
+    $ make clean
+
+Execution examples:
+    $ ./rdpr 10.10.1.100 8080 received.dat
+    $ ./rdps 192.168.1.100 8080 10.10.1.100 8080 testfile.txt
+
+What has changed in the final submission:
+----------------------------------------
+
+I have made several changes to my originally submitted code. I changed my sequence/acknowledgement
+number to be 16 bits in length as this was easier to work with when it came to wrapping them with integers.
+(Previously was 32 bits but integers are also 32 bits which is a hassle to deal with wrapping without running out of memory and I didn't want
+to use longs/doubles to rectify this).
+As such the maximum sequence number allowed is now 65535 and any sequence higher than this gets wrapped back to 0.
+
+Error control is now implemented as required and I did this as I stated in the first design document.
+To recap, I used a timeout for the last packet sent and the sender will receive packets until:
+    a) All sent packets are acknowledged; or
+    b) Timeout occurs
+
+After receiving ACK packets the sender will shift its window/buffer to the first unacknowledged data packet and also load any new data into
+the freed up space.
+
+If some packets were not ACK'd as expected I have also created a variable "toDbl" which starts at 1 and doubles each time that not all
+packets were successfully ACK'd. I have deviated from the original plan to do the full RTO calculation as it seemed overkill.
+
+Code Overview:
+-----------------------
+This section will briefly discuss the code organization and basic flow in rdps.c
+
+In both the sender and receiver I use a similar structure to keep a consistent flow.
+Present in both is a struct called "headerInfo" that is used for storing RDP header data from received messages.
+The sender size has fields "ack" and "window" whereas the receiver has "seq" and "length" since receiver and sender expect
+different values from those fields.
+
+I also use a struct "tLog" (transfer log) for storing all the info thats printed out at the end of the transfer.
+
+Common functions in both rdpr.c and rdps.c:
+    - parseRDPHeader()
+        This parses a packet and stores the RDP header fields in a "headerInfo" object
+    - convertIntToByte()
+        Converts an integer into an unsigned char array (bytes)
+    - seekIData()
+        Reads a subsection of an unsigned char array and converts into integer
+    - printLog()
+        Prints the log formatted according to the assignment specification
+    - setOptionsAndBind()
+        Sets all the options used when initializing the socket
+    - subString()
+        Gets substring of string
+    - toLowerCase()
+        Makes string all lowercase
+
+
+Sender Code Overview:
+---------------------
+(After setting up the socket and initializing variables in main() )
+The sender will begin by first sending a SYN message to the receiver in the function
+requestSynAck(). In this function the sender will keep sending SYN until it receives a valid ACK
+back from the receiver.
+
+Once the 2-way handshake has been established the function startSender() is called. This function
+includes the main loop for the rest of the transfer. Here the sender's window is defined.
+This is the "dataBuffer" array. This is a 2D array rather than 1D buffer and includes approximately
+the ceil() of as many 1000 byte payloads that can fit into the receiver's window. This is easier
+for loading in data from the file and sending as its as simple as reading at most 1000 bytes into a payload
+in the dataBuffer and copying that into the RDP packet when its going to be sent.
+
+In startSender() I've defined "dataOffset" which is a global variable that keeps track of the the byte index
+of whats been read in the file being sent.
+
+I also have a function seekSData(). This is similar to seekIData() except that it returns an unsigned char array.
+Basically it returns a specified number of bytes past a given offset (dataOffset) in the file.
+
+The main loop in the startSender() function closes once there are no more bytes left in the file
+and there are no more payloads in dataBuffer(). Thus, all payloads must have been acknowledged by the sender
+and we can send our FIN packet. Outside the loop we do this and loop until we receive the final acknowledgement from
+the receiver. AFTER 10 FIN PACKETS SENT THE SENDER WILL GIVE UP. I do not have a 3-way FIN-ACK. The sender will just
+assume the sender's ACK got dropped if 10 FINs don't get acked. 
+
+Back to the main loop. There are 3 parts to it:
+    1) Sending data packets
+    2) Setting timeout and receiving packets
+    3) Shifting dataBuffer and loading more data
+
+The method sendRDP() creates the RDP header by packaging all the fields into a buffer and then sends it to the
+receiver.
+
+After sending all these packets I create a timeout startTime which is 20ms into the future. I will explain
+how I decided to go about implementing the timeout momentarily.
+
+For receiving the ACK's. I have a loop that uses another function recvData() that breaks when recvData()
+times out, receives a RST packet, receives an ACK for every packet sent, or the highest sequence number sent
+prior was acknowledged.
+
+The function recvData() first gets the current time and ensures that it is behind the timeout.
+The difference between these times is used to get the new timeout for the recvRDP() function.
+
+Now onto my timeout. To keep things simple I used a method setSockTimeout() that takes in a socket and the seconds
+for the timeout. I used setsockopt() to set SO_RCVTIMEO for each receive. It converts the seconds into a
+timeval.
+
+After this timeout has been setup in recvData() the function recvRDP() is called. This function is used
+for parsing RDP headers on packets received and also loops until it gets something valid. The function
+returns -1 if it times out, 0 if a RST packet is received, and 1 if it gets an ACK.
+
+Finally, after the receiving packets process has closed either from timeout or just being successful
+the loop ends by updating sequence numbers and also doubling the timeout if packets were lost.
+The function loadDataIntoBuffer() is also called.
+
+This function simply shifts data in the dataBuffer if the new highest ack is higher than it was before.
+It shifts this data for each payload that was successfully acknowledged and then loads more data into the tail end
+while there are still bytes left in the file.
+
+I made a great effort to keep my code structured as attempting to do all of these tasks
+in a single function would make it nearly impossible to understand.
+
+Receiver Code Overview:
+-----------------------
+The receiver side is very similar in how it handles certain processes and generally is much simpler
+than the sender since it doesn't have to worry about timeouts and error control.
+
+main() is used for initializing the socket and any variables used throughout.
+
+startReceiver() is the same idea as startSender() and serves as the main location for the loop.
+The buffer size is set to 14000 bytes and this is the starting window that will be sent to the sender
+after receiving the SYN packet.
+
+Back to the main loop. This loop closes as soon as a FIN packet has been received or an error
+occurs and RST is sent.
+
+After receiving a packet, the receiver parses it the same as the sender and then passes the info
+to processReceived(). This function chooses the action based on the type field received.
+If SYN then the sequence numbers and start time are set.
+If DAT then we check if the packet has been seen before and if not then we write it into our buffer
+and shorten our buffer. Of course, we only shorten the window if its the packet for the first unacknowledged
+sequence number. I am using a linear buffer for this and so to iterate through it I use a simple queue
+that keeps track of the sequence numbers received and their sizes.
+This is what isNotable() and pushSeq() is for.
+
+When the buffer is nearly full and can't fit a full packet in it or a FIN has been received the function
+writeAndSlideWindow() is called. This just writes all the data in the buffer to the end of the received.dat file
+and "slides" the window back to full buffer size.
+
+After processing the packet the sendResponse() method is called. This is basically the same function
+as sendRDP().
+
+For the receiver this is pretty much all there is. Not much has changed since the last implementation aside from the
+wrapping of the sequence numbers.
